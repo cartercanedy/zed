@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use crate::active_item_selection_properties;
+use futures::channel::oneshot::channel;
 use fuzzy::{StringMatch, StringMatchCandidate};
 use gpui::{
     rems, Action, AnyElement, AppContext, DismissEvent, EventEmitter, FocusableView,
@@ -198,7 +199,7 @@ impl PickerDelegate for TasksModalDelegate {
         query: String,
         cx: &mut ViewContext<picker::Picker<Self>>,
     ) -> Task<()> {
-        let task_type = self.task_modal_type.clone();
+        let task_type = self.task_modal_type;
         cx.spawn(move |picker, mut cx| async move {
             let Some(candidates) = picker
                 .update(&mut cx, |picker, cx| {
@@ -298,13 +299,12 @@ impl PickerDelegate for TasksModalDelegate {
         let Some((task_source_kind, mut task)) = task else {
             return;
         };
-        if let Some(TaskOverrides {
-            reveal_target: Some(reveal_target),
-        }) = &self.task_overrides
-        {
-            if let Some(resolved_task) = &mut task.resolved {
-                resolved_task.reveal_target = *reveal_target;
-            }
+
+        if let Some((
+            resolved_task,
+            TaskOverrides { reveal_target: Some(reveal_target) }
+        )) = task.resolved.as_mut().zip(self.task_overrides.as_ref()) {
+            resolved_task.reveal_target = *reveal_target;
         }
 
         self.workspace
@@ -318,9 +318,32 @@ impl PickerDelegate for TasksModalDelegate {
                         cx,
                     ),
                     // This would allow users to access to debug history and other issues
-                    TaskType::Debug(_) => workspace.project().update(cx, |project, cx| {
-                        project.start_debug_adapter_client_from_task(task, cx)
-                    }),
+                    TaskType::Debug(config) => {
+                        let pre_task = config.pre_debug_task.into();
+
+                        let (s, r) = channel::<anyhow::Result<u32>>();
+                        cx.emit(workspace::Event::SpawnTask {
+                            action: Box::new(pre_task),
+                            sync: Some(s)
+                        });
+
+                        let project = workspace.project().downgrade();
+                        cx.background_executor().spawn(|| async move {
+                            match r.try_recv() {
+                                Ok(exit_code) if exit_code == 0 => anyhow::Result::Ok(()),
+                                Err(error) => anyhow::Result::Err(error),
+                                Ok(exit_code) => anyhow::Result::Err(
+                                    anyhow::Error::msg("pre-debug tasks failed with non-zero exit code")
+                                )
+                            }?;
+
+                            project.update(cx, |project, cx| {
+                                project.start_debug_adapter_client_from_task(task, config, cx)
+                            });
+
+                            anyhow::Result::Ok(())
+                        })
+                    },
                 };
             })
             .ok();
@@ -478,8 +501,8 @@ impl PickerDelegate for TasksModalDelegate {
                     ),
                     // TODO: Should create a schedule_resolved_debug_task function
                     // This would allow users to access to debug history and other issues
-                    TaskType::Debug(_) => workspace.project().update(cx, |project, cx| {
-                        project.start_debug_adapter_client_from_task(task, cx)
+                    TaskType::Debug(config) => workspace.project().update(cx, |project, cx| {
+                        project.start_debug_adapter_client_from_task(task, config, cx)
                     }),
                 };
             })

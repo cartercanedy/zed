@@ -62,6 +62,7 @@ pub fn schedule_resolved_task(
 
         cx.emit(crate::Event::SpawnTask {
             action: Box::new(spawn_in_terminal),
+            sync: None
         });
     }
 }

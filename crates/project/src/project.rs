@@ -35,7 +35,7 @@ use dap::{
     client::{DebugAdapterClient, DebugAdapterClientId},
     debugger_settings::DebuggerSettings,
     messages::Message,
-    session::DebugSessionId,
+    session::DebugSessionId, DebugAdapterConfig,
 };
 
 use collections::{BTreeSet, HashMap, HashSet};
@@ -1284,13 +1284,18 @@ impl Project {
     pub fn start_debug_adapter_client_from_task(
         &mut self,
         debug_task: task::ResolvedTask,
+        mut config: DebugAdapterConfig,
         cx: &mut ModelContext<Self>,
     ) {
-        if let Some(config) = debug_task.debug_adapter_config() {
-            self.dap_store.update(cx, |store, cx| {
-                store.start_debug_session(config, cx).detach_and_log_err(cx);
-            });
+        if let Some(resolved) = debug_task.resolved.as_ref() {
+            config.label = resolved.label.clone();
+            config.program = resolved.program.clone().or(config.program);
+            config.cwd = resolved.cwd.clone().or(config.cwd);
         }
+
+        self.dap_store.update(cx, |store, cx| {
+            store.start_debug_session(config, cx).detach_and_log_err(cx);
+        });
     }
 
     /// Get all serialized breakpoints that belong to a buffer

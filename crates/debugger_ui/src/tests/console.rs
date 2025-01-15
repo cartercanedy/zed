@@ -498,6 +498,8 @@ async fn test_evaluate_expression(executor: BackgroundExecutor, cx: &mut TestApp
                     program: None,
                     cwd: None,
                     initialize_args: None,
+                    pre_debug_task: None,
+                    post_debug_task: None
                 },
                 cx,
             )

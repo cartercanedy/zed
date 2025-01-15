@@ -40,6 +40,8 @@ async fn test_basic_show_debug_panel(executor: BackgroundExecutor, cx: &mut Test
                     program: None,
                     cwd: None,
                     initialize_args: None,
+                    pre_debug_task: None,
+                    post_debug_task: None
                 },
                 cx,
             )
@@ -157,6 +159,8 @@ async fn test_we_can_only_have_one_panel_per_debug_thread(
                     program: None,
                     cwd: None,
                     initialize_args: None,
+                    pre_debug_task: None,
+                    post_debug_task: None
                 },
                 cx,
             )
@@ -305,6 +309,8 @@ async fn test_client_can_open_multiple_thread_panels(
                     program: None,
                     cwd: None,
                     initialize_args: None,
+                    pre_debug_task: None,
+                    post_debug_task: None
                 },
                 cx,
             )
@@ -455,6 +461,8 @@ async fn test_handle_successful_run_in_terminal_reverse_request(
                     program: None,
                     cwd: None,
                     initialize_args: None,
+                    pre_debug_task: None,
+                    post_debug_task: None
                 },
                 cx,
             )
@@ -561,6 +569,8 @@ async fn test_handle_error_run_in_terminal_reverse_request(
                     program: None,
                     cwd: None,
                     initialize_args: None,
+                    pre_debug_task: None,
+                    post_debug_task: None
                 },
                 cx,
             )
@@ -658,6 +668,8 @@ async fn test_handle_start_debugging_reverse_request(
                     program: None,
                     cwd: None,
                     initialize_args: None,
+                    pre_debug_task: None,
+                    post_debug_task: None
                 },
                 cx,
             )
@@ -785,6 +797,8 @@ async fn test_debug_panel_item_thread_status_reset_on_failure(
                     program: None,
                     cwd: None,
                     initialize_args: None,
+                    pre_debug_task: None,
+                    post_debug_task: None
                 },
                 cx,
             )

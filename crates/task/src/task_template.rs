@@ -88,7 +88,7 @@ pub enum TaskType {
 
 #[cfg(test)]
 mod deserialization_tests {
-    use crate::{DebugAdapterKind, TCPHost};
+    use crate::{debug_format::DebugAuxiliaryTask, DebugAdapterKind, TCPHost};
 
     use super::*;
     use serde_json::json;
@@ -104,6 +104,12 @@ mod deserialization_tests {
 
     #[test]
     fn deserialize_task_type_debug() {
+        let aux_task = DebugAuxiliaryTask {
+            command: "test_cmd".into(),
+            args: vec!["foo".into(), "bar".into()],
+            ..DebugAuxiliaryTask::default()
+        };
+
         let adapter_config = DebugAdapterConfig {
             label: "test config".into(),
             kind: DebugAdapterKind::Python(TCPHost::default()),
@@ -111,12 +117,28 @@ mod deserialization_tests {
             program: Some("main".to_string()),
             cwd: None,
             initialize_args: None,
+            pre_debug_task: Some(aux_task),
+            post_debug_task: None
         };
         let json = json!({
             "label": "test config",
             "type": "debug",
             "adapter": "python",
-            "program": "main"
+            "program": "main",
+            "pre_debug_task": {
+                "label": "",
+                "command": "test_cmd",
+                "args": ["foo", "bar"],
+                "env": {},
+                "use_new_terminal": false,
+                "allow_concurrent_runs": false,
+                "reveal": "always",
+                "reveal_target": "dock",
+                "hide": "never",
+                "shell": "system",
+                "show_command": false,
+                "show_summary": false,
+            }
         });
 
         let task_type: TaskType =
@@ -129,7 +151,7 @@ mod deserialization_tests {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 /// The type of task modal to spawn
 pub enum TaskModal {
     /// Show regular tasks

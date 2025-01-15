@@ -101,22 +101,6 @@ impl ResolvedTask {
         self.original_task.task_type.clone()
     }
 
-    /// Get the configuration for the debug adapter that should be used for this task.
-    pub fn debug_adapter_config(&self) -> Option<DebugAdapterConfig> {
-        match self.original_task.task_type.clone() {
-            TaskType::Script => None,
-            TaskType::Debug(mut adapter_config) => {
-                if let Some(resolved) = &self.resolved {
-                    adapter_config.label = resolved.label.clone();
-                    adapter_config.program = resolved.program.clone().or(adapter_config.program);
-                    adapter_config.cwd = resolved.cwd.clone().or(adapter_config.cwd);
-                }
-
-                Some(adapter_config)
-            }
-        }
-    }
-
     /// Variables that were substituted during the task template resolution.
     pub fn substituted_variables(&self) -> &HashSet<VariableName> {
         &self.substituted_variables

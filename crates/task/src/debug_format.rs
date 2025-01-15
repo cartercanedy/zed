@@ -1,11 +1,12 @@
 use schemars::{gen::SchemaSettings, JsonSchema};
 use serde::{Deserialize, Serialize};
+use zed_actions::RevealTarget;
 use std::collections::HashMap;
 use std::net::Ipv4Addr;
 use std::path::PathBuf;
-use util::ResultExt;
+use util::serde::default_true;
 
-use crate::{TaskTemplate, TaskTemplates, TaskType};
+use crate::{HideStrategy, RevealStrategy, Shell, TaskTemplate, TaskTemplates, TaskType};
 
 impl Default for DebugConnectionType {
     fn default() -> Self {
@@ -38,7 +39,7 @@ impl TCPHost {
 }
 
 /// Represents the attach request information of the debug adapter
-#[derive(Default, Deserialize, Serialize, PartialEq, Eq, JsonSchema, Clone, Debug)]
+#[derive(Default, Deserialize, Serialize, PartialEq, Eq, JsonSchema, Clone, Copy, Debug)]
 pub struct AttachConfig {
     /// The processId to attach to, if left empty we will show a process picker
     #[serde(default)]
@@ -54,6 +55,16 @@ pub enum DebugRequestType {
     Launch,
     /// Call the `attach` request on the debug adapter
     Attach(AttachConfig),
+}
+
+impl DebugRequestType {
+    /// return the `AttachConfig` of a `DebugRequestType`, if it exists
+    pub fn attach_config(&self) -> Option<AttachConfig> {
+        match self {
+            Self::Attach(config) => Some(*config),
+            _ => None
+        }
+    }
 }
 
 /// The Debug adapter to use
@@ -113,6 +124,90 @@ pub struct CustomArgs {
     pub envs: Option<HashMap<String, String>>,
 }
 
+#[derive(Deserialize, Serialize, PartialEq, Eq, JsonSchema, Clone, Debug)]
+#[serde(rename_all = "snake_case")]
+pub struct DebugShellTask {
+    /// The path to an executable to run
+    pub command: String,
+    /// Additional command-line args to pass to command upon invocation
+    pub args: Option<Vec<String>>,
+    /// Optional environment variables to set for the command invocation
+    pub envs: Option<HashMap<String, String>>
+}
+
+#[derive(Clone, Default, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct DebugAuxiliaryTask {
+    /// Human readable name of the task to display in the UI.
+    pub label: String,
+    /// Executable command to spawn.
+    pub command: String,
+    /// Arguments to the command.
+    #[serde(default)]
+    pub args: Vec<String>,
+    /// Env overrides for the command, will be appended to the terminal's environment from the settings.
+    #[serde(default)]
+    pub env: ::collections::HashMap<String, String>,
+    /// Current working directory to spawn the command into, defaults to current project root.
+    #[serde(default)]
+    pub cwd: Option<String>,
+    /// Whether to use a new terminal tab or reuse the existing one to spawn the process.
+    #[serde(default)]
+    pub use_new_terminal: bool,
+    /// Whether to allow multiple instances of the same task to be run, or rather wait for the existing ones to finish.
+    #[serde(default)]
+    pub allow_concurrent_runs: bool,
+    /// What to do with the terminal pane and tab, after the command was started:
+    /// * `always` — always show the task's pane, and focus the corresponding tab in it (default)
+    // * `no_focus` — always show the task's pane, add the task's tab in it, but don't focus it
+    // * `never` — do not alter focus, but still add/reuse the task's tab in its pane
+    #[serde(default)]
+    pub reveal: RevealStrategy,
+    /// Where to place the task's terminal item after starting the task.
+    /// * `dock` — in the terminal dock, "regular" terminal items' place (default).
+    /// * `center` — in the central pane group, "main" editor area.
+    #[serde(default)]
+    pub reveal_target: RevealTarget,
+    /// What to do with the terminal pane and tab, after the command had finished:
+    /// * `never` — do nothing when the command finishes (default)
+    /// * `always` — always hide the terminal tab, hide the pane also if it was the last tab in it
+    /// * `on_success` — hide the terminal tab on task success only, otherwise behaves similar to `always`.
+    #[serde(default)]
+    pub hide: HideStrategy,
+    /// Which shell to use when spawning the task.
+    #[serde(default)]
+    pub shell: Shell,
+    /// Whether to show the task line in the task output.
+    #[serde(default = "default_true")]
+    pub show_summary: bool,
+    /// Whether to show the command line in the task output.
+    #[serde(default = "default_true")]
+    pub show_command: bool,
+}
+
+impl Into<TaskTemplate> for DebugAuxiliaryTask {
+    /// Translate from debug definition to a task template
+    fn into(self) -> TaskTemplate {
+        TaskTemplate {
+            task_type: TaskType::Script,
+            label: self.label,
+            command: self.command,
+            args: self.args,
+            cwd: self.cwd,
+            shell: self.shell,
+            allow_concurrent_runs: self.allow_concurrent_runs,
+            env: self.env,
+            hide: self.hide,
+            reveal: self.reveal,
+            reveal_target: self.reveal_target,
+            show_command: self.show_command,
+            show_summary: self.show_summary,
+            use_new_terminal: self.use_new_terminal,
+            tags: Vec::new()
+        }
+    }
+}
+
 /// Represents the configuration for the debug adapter
 #[derive(Deserialize, Serialize, PartialEq, Eq, JsonSchema, Clone, Debug)]
 #[serde(rename_all = "snake_case")]
@@ -131,6 +226,10 @@ pub struct DebugAdapterConfig {
     pub cwd: Option<PathBuf>,
     /// Additional initialization arguments to be sent on DAP initialization
     pub initialize_args: Option<serde_json::Value>,
+    /// Optional command to invoke prior to beginning debug session, e.g. `cargo build`
+    pub pre_debug_task: Option<DebugAuxiliaryTask>,
+    /// Optional command to invoke after completion of a debug session
+    pub post_debug_task: Option<DebugAuxiliaryTask>
 }
 
 /// Represents the type of the debugger adapter connection
@@ -161,33 +260,38 @@ pub struct DebugTaskDefinition {
     cwd: Option<String>,
     /// Additional initialization arguments to be sent on DAP initialization
     initialize_args: Option<serde_json::Value>,
+    /// Optional command to invoke prior to beginning debug session, e.g. `cargo build`
+    pre_debug_task: Option<DebugAuxiliaryTask>,
+    /// Optional command to invoke after completion of a debug session
+    post_debug_task: Option<DebugAuxiliaryTask>
+}
+
+impl Into<DebugAdapterConfig> for DebugTaskDefinition {
+    fn into(self) -> DebugAdapterConfig {
+        DebugAdapterConfig {
+            label: self.label,
+            kind: self.kind,
+            request: self.request,
+            program: self.program,
+            cwd: self.cwd.map(PathBuf::from).take_if(|p| p.exists()),
+            initialize_args: self.initialize_args,
+            pre_debug_task: self.pre_debug_task,
+            post_debug_task: self.post_debug_task
+        }
+    }
 }
 
 impl DebugTaskDefinition {
     /// Translate from debug definition to a task template
-    pub fn to_zed_format(self) -> anyhow::Result<TaskTemplate> {
-        let command = "".to_string();
-        let cwd = self.cwd.clone().map(PathBuf::from).take_if(|p| p.exists());
-
-        let task_type = TaskType::Debug(DebugAdapterConfig {
-            label: self.label.clone(),
-            kind: self.kind,
-            request: self.request,
-            program: self.program,
-            cwd: cwd.clone(),
-            initialize_args: self.initialize_args,
-        });
-
-        let args: Vec<String> = Vec::new();
-
-        Ok(TaskTemplate {
+    pub fn to_task_template(self) -> TaskTemplate {
+        TaskTemplate {
+            task_type: TaskType::Debug(self.clone().into()),
             label: self.label,
-            command,
-            args,
-            task_type,
+            command: String::new(),
+            args: Vec::new(),
             cwd: self.cwd,
             ..Default::default()
-        })
+        }
     }
 }
 
@@ -215,7 +319,7 @@ impl TryFrom<DebugTaskFile> for TaskTemplates {
         let templates = value
             .0
             .into_iter()
-            .filter_map(|debug_definition| debug_definition.to_zed_format().log_err())
+            .map(|debug_definition| debug_definition.to_task_template())
             .collect();
 
         Ok(Self(templates))

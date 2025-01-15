@@ -949,43 +949,31 @@ impl DapStore {
         };
 
         let session_id = *session_id;
-        let config = session.read(cx).configuration().clone();
+        let mut config = session.read(cx).configuration().clone();
 
-        let request_args = args.unwrap_or_else(|| StartDebuggingRequestArguments {
-            configuration: config.initialize_args.clone().unwrap_or_default(),
-            request: match config.request {
-                DebugRequestType::Launch => StartDebuggingRequestArgumentsRequest::Launch,
-                DebugRequestType::Attach(_) => StartDebuggingRequestArgumentsRequest::Attach,
-            },
-        });
-
-        // Merge the new configuration over the existing configuration
-        let mut initialize_args = config.initialize_args.unwrap_or_default();
-        merge_json_value_into(request_args.configuration, &mut initialize_args);
-
-        let new_config = DebugAdapterConfig {
-            label: config.label.clone(),
-            kind: config.kind.clone(),
-            request: match request_args.request {
-                StartDebuggingRequestArgumentsRequest::Launch => DebugRequestType::Launch,
-                StartDebuggingRequestArgumentsRequest::Attach => DebugRequestType::Attach(
-                    if let DebugRequestType::Attach(attach_config) = config.request {
-                        attach_config
-                    } else {
-                        AttachConfig::default()
-                    },
+        if let Some(StartDebuggingRequestArguments { request, configuration: init_config }) = args {
+            use StartDebuggingRequestArgumentsRequest::*;
+            config.request = match request {
+                Attach => DebugRequestType::Attach(
+                    config.request.attach_config().unwrap_or(AttachConfig::default())
                 ),
-            },
-            program: config.program.clone(),
-            cwd: config.cwd.clone(),
-            initialize_args: Some(initialize_args),
-        };
+                Launch => DebugRequestType::Launch
+            };
+
+            if let Some(ref mut args) = config.initialize_args {
+                merge_json_value_into(init_config, args);
+            } else {
+                let mut args = Default::default();
+                merge_json_value_into(init_config, &mut args);
+                let _ = config.initialize_args.insert(args);
+            };
+        }
 
         cx.spawn(|this, mut cx| async move {
             let (success, body) = {
                 let reconnect_task = this.update(&mut cx, |store, cx| {
                     if !client.adapter().supports_attach()
-                        && matches!(new_config.request, DebugRequestType::Attach(_))
+                        && matches!(config.request, DebugRequestType::Attach(_))
                     {
                         Task::ready(Err(anyhow!(
                             "Debug adapter does not support `attach` request"
@@ -995,7 +983,7 @@ impl DapStore {
                             &session_id,
                             client.adapter().clone(),
                             client.binary().clone(),
-                            new_config,
+                            config,
                             cx,
                         )
                     }
