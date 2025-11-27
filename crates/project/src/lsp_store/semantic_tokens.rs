@@ -1,7 +1,7 @@
-use std::{collections::hash_map, iter::Peekable, slice::ChunksExact, sync::Arc};
+use std::{cmp::Reverse, collections::{BTreeMap, BinaryHeap, hash_map}, mem::size_of, sync::Arc};
 
 use anyhow::Result;
-
+use bytemuck::{Pod, Zeroable};
 use clock::Global;
 use collections::HashMap;
 use futures::{
@@ -14,6 +14,7 @@ use lsp::{AdapterServerCapabilities, LSP_REQUEST_TIMEOUT, LanguageServerId};
 use rpc::{TypedEnvelope, proto};
 use text::BufferId;
 use util::ResultExt as _;
+
 
 use crate::{
     LanguageServerToQuery, LspStore, LspStoreEvent,
@@ -320,10 +321,6 @@ pub struct BufferSemanticTokens {
     pub servers: HashMap<lsp::LanguageServerId, ServerSemanticTokens>,
 }
 
-struct BufferSemanticTokensIter<'a> {
-    iters: Vec<(lsp::LanguageServerId, Peekable<SemanticTokensIter<'a>>)>,
-}
-
 /// All the semantic tokens for a buffer, from a single language server.
 #[derive(Debug, Clone)]
 pub struct ServerSemanticTokens {
@@ -341,11 +338,33 @@ pub struct ServerSemanticTokens {
 }
 
 pub struct SemanticTokensIter<'a> {
+    idx: usize,
     prev: Option<(u32, u32)>,
-    data: ChunksExact<'a, u32>,
+    data: &'a [SemanticTokenValue]
+}
+
+pub struct BufferSemanticTokensIter<'a> {
+    heap: BinaryHeap<Reverse<(SemanticToken, lsp::LanguageServerId)>>,
+    iters: BTreeMap<lsp::LanguageServerId, SemanticTokensIter<'a>>
+}
+
+impl<'a> Iterator for BufferSemanticTokensIter<'a> {
+    type Item = (lsp::LanguageServerId, SemanticToken);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let Reverse((token, id)) = self.heap.pop()?;
+
+        if let Some(next_item) = self.iters.get_mut(&id).and_then(|iter| iter.next()) {
+            self.heap.push(Reverse((next_item, id)));
+        }
+
+        Some((id, token))
+    }
 }
 
 // A single item from `data`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Pod, Zeroable)]
+#[repr(C)]
 struct SemanticTokenValue {
     delta_line: u32,
     delta_start: u32,
@@ -355,7 +374,8 @@ struct SemanticTokenValue {
 }
 
 /// A semantic token, independent of its position.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Pod, Zeroable)]
+#[repr(C)]
 pub struct SemanticToken {
     pub line: u32,
     pub start: u32,
@@ -364,15 +384,33 @@ pub struct SemanticToken {
     pub token_modifiers: u32,
 }
 
+impl PartialOrd for SemanticToken {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        (self.line, self.start).partial_cmp(&(other.line, other.start))
+    }
+}
+
+impl Ord for SemanticToken {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        (self.line, self.start).cmp(&(other.line, other.start))
+    }
+}
+
 impl BufferSemanticTokens {
     pub fn all_tokens(&self) -> impl Iterator<Item = (lsp::LanguageServerId, SemanticToken)> {
-        let iters = self
-            .servers
+        let mut iters = self.servers
             .iter()
-            .map(|(server_id, tokens)| (*server_id, tokens.tokens().peekable()))
-            .collect();
+            .map(|(id, tokens)| (*id, tokens.tokens()))
+            .collect::<BTreeMap<lsp::LanguageServerId, _>>();
 
-        BufferSemanticTokensIter { iters }
+        let mut heap = BinaryHeap::new();
+        for (id, tokens) in iters.iter_mut() {
+            if let Some(token) = tokens.next() {
+                heap.push(Reverse((token, *id)));
+            }
+        }
+
+        BufferSemanticTokensIter { heap, iters }
     }
 }
 
@@ -390,29 +428,15 @@ impl ServerSemanticTokens {
     }
 
     pub fn tokens(&self) -> SemanticTokensIter<'_> {
+        // satisfy cast invariant: self.data.len() % (sizeof(SemanticTokenValue) / sizeof(u32)) == 0
+        const TOKEN_SIZE: usize = size_of::<SemanticTokenValue>() / size_of::<u32>();
+        let normalized = &self.data[..self.data.len() / TOKEN_SIZE * TOKEN_SIZE];
+
         SemanticTokensIter {
             prev: None,
-            data: self.data.chunks_exact(5),
+            idx: 0,
+            data: bytemuck::cast_slice(normalized)
         }
-    }
-}
-
-// TODO kb why is it necessary?
-// Preform the data in the task instead?
-impl Iterator for BufferSemanticTokensIter<'_> {
-    type Item = (lsp::LanguageServerId, SemanticToken);
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let (i, _) = self
-            .iters
-            // TODO kb can we avoid re-iterating each time?
-            .iter_mut()
-            .enumerate()
-            .filter_map(|(i, (_, iter))| iter.peek().map(|peeked| (i, peeked)))
-            .min_by_key(|(_, tok)| (tok.line, tok.start))?;
-
-        let (id, iter) = &mut self.iters[i];
-        Some((*id, iter.next()?))
     }
 }
 
@@ -420,14 +444,7 @@ impl Iterator for SemanticTokensIter<'_> {
     type Item = SemanticToken;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let chunk = self.data.next()?;
-        let token = SemanticTokenValue {
-            delta_line: chunk[0],
-            delta_start: chunk[1],
-            length: chunk[2],
-            token_type: chunk[3],
-            token_modifiers: chunk[4],
-        };
+        let token = self.data.get(self.idx)?;
 
         let (line, start) = if let Some((last_line, last_start)) = self.prev {
             let line = last_line + token.delta_line;
@@ -442,6 +459,7 @@ impl Iterator for SemanticTokensIter<'_> {
         };
 
         self.prev = Some((line, start));
+        self.idx += 1;
 
         Some(SemanticToken {
             line,

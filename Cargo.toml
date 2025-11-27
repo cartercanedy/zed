@@ -476,6 +476,7 @@ blade-macros = { version = "0.3.0" }
 blade-util = { version = "0.3.0" }
 brotli = "8.0.2"
 bytes = "1.0"
+bytemuck = { version = "1.24.0", features = ["must_cast", "derive"] }
 cargo_metadata = "0.19"
 cargo_toml = "0.21"
 cfg-if = "1.0.3"
