@@ -1,4 +1,9 @@
-use std::{cmp::Reverse, collections::{BinaryHeap, hash_map}, mem::size_of, sync::Arc};
+use std::{
+    cmp::Reverse,
+    collections::{BinaryHeap, hash_map},
+    mem::size_of,
+    sync::Arc,
+};
 
 use anyhow::Result;
 use bytemuck::{Pod, Zeroable};
@@ -14,7 +19,6 @@ use lsp::{AdapterServerCapabilities, LSP_REQUEST_TIMEOUT, LanguageServerId};
 use rpc::{TypedEnvelope, proto};
 use text::BufferId;
 use util::ResultExt as _;
-
 
 use crate::{
     LanguageServerToQuery, LspStore, LspStoreEvent,
@@ -340,7 +344,7 @@ pub struct ServerSemanticTokens {
 pub struct SemanticTokensIter<'a> {
     idx: usize,
     prev: Option<(u32, u32)>,
-    data: &'a [SemanticTokenValue]
+    data: &'a [SemanticTokenValue],
 }
 
 pub enum BufferSemanticTokensIter<'a> {
@@ -348,8 +352,8 @@ pub enum BufferSemanticTokensIter<'a> {
     Single(lsp::LanguageServerId, SemanticTokensIter<'a>),
     Many {
         heap: BinaryHeap<Reverse<(SemanticToken, lsp::LanguageServerId)>>,
-        iters: HashMap<lsp::LanguageServerId, SemanticTokensIter<'a>>
-    }
+        iters: HashMap<lsp::LanguageServerId, SemanticTokensIter<'a>>,
+    },
 }
 
 impl<'a> Iterator for BufferSemanticTokensIter<'a> {
@@ -411,11 +415,12 @@ impl BufferSemanticTokens {
         match self.servers.len() {
             0 => BufferSemanticTokensIter::Empty,
             1 => {
-                let server = self.servers.first().unwrap();
+                let server = self.servers.iter().next().unwrap();
                 BufferSemanticTokensIter::Single(*server.0, server.1.tokens())
             }
             _ => {
-                let mut iters = self.servers
+                let mut iters = self
+                    .servers
                     .iter()
                     .map(|(id, tokens)| (*id, tokens.tokens()))
                     .collect::<HashMap<_, _>>();
@@ -454,7 +459,7 @@ impl ServerSemanticTokens {
         SemanticTokensIter {
             prev: None,
             idx: 0,
-            data: bytemuck::cast_slice(normalized)
+            data: bytemuck::cast_slice(normalized),
         }
     }
 }
@@ -576,15 +581,23 @@ mod tests {
 
         const N_SERVERS: usize = 10;
         let buffer_tokens = BufferSemanticTokens {
-            servers: HashMap::from_iter((0..N_SERVERS).map(|i| (lsp::LanguageServerId(i), ServerSemanticTokens::from_full(token_data.clone(), None))))
+            servers: HashMap::from_iter((0..N_SERVERS).map(|i| {
+                (
+                    lsp::LanguageServerId(i),
+                    ServerSemanticTokens::from_full(token_data.clone(), None),
+                )
+            })),
         };
 
-        let all_tokens = buffer_tokens
-            .all_tokens()
-            .collect_vec();
+        let all_tokens = buffer_tokens.all_tokens().collect_vec();
 
         for i in 0..N_SERVERS {
-            assert!(all_tokens[i..].iter().step_by(N_SERVERS).all(|(id, _)| id.0 == i));
+            assert!(
+                all_tokens[i..]
+                    .iter()
+                    .step_by(N_SERVERS)
+                    .all(|(id, _)| id.0 == i)
+            );
         }
     }
 }
