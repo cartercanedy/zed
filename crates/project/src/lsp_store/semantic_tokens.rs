@@ -1,4 +1,4 @@
-use std::{cmp::Reverse, collections::{BTreeMap, BinaryHeap, hash_map}, mem::size_of, sync::Arc};
+use std::{cmp::Reverse, collections::{BinaryHeap, hash_map}, mem::size_of, sync::Arc};
 
 use anyhow::Result;
 use bytemuck::{Pod, Zeroable};
@@ -343,22 +343,32 @@ pub struct SemanticTokensIter<'a> {
     data: &'a [SemanticTokenValue]
 }
 
-pub struct BufferSemanticTokensIter<'a> {
-    heap: BinaryHeap<Reverse<(SemanticToken, lsp::LanguageServerId)>>,
-    iters: BTreeMap<lsp::LanguageServerId, SemanticTokensIter<'a>>
+pub enum BufferSemanticTokensIter<'a> {
+    Empty,
+    Single(lsp::LanguageServerId, SemanticTokensIter<'a>),
+    Many {
+        heap: BinaryHeap<Reverse<(SemanticToken, lsp::LanguageServerId)>>,
+        iters: HashMap<lsp::LanguageServerId, SemanticTokensIter<'a>>
+    }
 }
 
 impl<'a> Iterator for BufferSemanticTokensIter<'a> {
     type Item = (lsp::LanguageServerId, SemanticToken);
 
     fn next(&mut self) -> Option<Self::Item> {
-        let Reverse((token, id)) = self.heap.pop()?;
+        match self {
+            Self::Empty => None,
+            Self::Single(id, iter) => iter.next().map(|tok| (*id, tok)),
+            Self::Many { heap, iters } => {
+                let Reverse((token, id)) = heap.pop()?;
 
-        if let Some(next_item) = self.iters.get_mut(&id).and_then(|iter| iter.next()) {
-            self.heap.push(Reverse((next_item, id)));
+                if let Some(next_item) = iters.get_mut(&id).and_then(|iter| iter.next()) {
+                    heap.push(Reverse((next_item, id)));
+                }
+
+                Some((id, token))
+            }
         }
-
-        Some((id, token))
     }
 }
 
@@ -398,19 +408,28 @@ impl Ord for SemanticToken {
 
 impl BufferSemanticTokens {
     pub fn all_tokens(&self) -> impl Iterator<Item = (lsp::LanguageServerId, SemanticToken)> {
-        let mut iters = self.servers
-            .iter()
-            .map(|(id, tokens)| (*id, tokens.tokens()))
-            .collect::<BTreeMap<lsp::LanguageServerId, _>>();
+        match self.servers.len() {
+            0 => BufferSemanticTokensIter::Empty,
+            1 => {
+                let server = self.servers.first().unwrap();
+                BufferSemanticTokensIter::Single(*server.0, server.1.tokens())
+            }
+            _ => {
+                let mut iters = self.servers
+                    .iter()
+                    .map(|(id, tokens)| (*id, tokens.tokens()))
+                    .collect::<HashMap<_, _>>();
 
-        let mut heap = BinaryHeap::new();
-        for (id, tokens) in iters.iter_mut() {
-            if let Some(token) = tokens.next() {
-                heap.push(Reverse((token, *id)));
+                let mut heap = BinaryHeap::new();
+                for (id, tokens) in iters.iter_mut() {
+                    if let Some(token) = tokens.next() {
+                        heap.push(Reverse((token, *id)));
+                    }
+                }
+
+                BufferSemanticTokensIter::Many { heap, iters }
             }
         }
-
-        BufferSemanticTokensIter { heap, iters }
     }
 }
 
@@ -473,6 +492,8 @@ impl Iterator for SemanticTokensIter<'_> {
 
 #[cfg(test)]
 mod tests {
+    use itertools::Itertools as _;
+
     use super::*;
 
     #[test]
@@ -541,5 +562,29 @@ mod tests {
                 (lsp::LanguageServerId(2), 2, 10),
             ]
         )
+    }
+
+    #[test]
+    fn test_large_token_sets_properly_muxed() {
+        let mut token_data = vec![0u32; 10000 * size_of::<SemanticTokenValue>()];
+        let tokens: &mut [SemanticTokenValue] = bytemuck::cast_slice_mut(&mut token_data);
+
+        for (idx, token) in tokens.iter_mut().enumerate() {
+            (token.delta_line, token.delta_start) = if idx % 10 == 0 { (1, 0) } else { (0, 1) };
+            token.length = 1;
+        }
+
+        const N_SERVERS: usize = 10;
+        let buffer_tokens = BufferSemanticTokens {
+            servers: IndexMap::from_iter((0..N_SERVERS).map(|i| (lsp::LanguageServerId(i), ServerSemanticTokens::from_full(token_data.clone(), None))))
+        };
+
+        let all_tokens = buffer_tokens
+            .all_tokens()
+            .collect_vec();
+
+        for i in 0..N_SERVERS {
+            assert!(all_tokens[i..].iter().step_by(N_SERVERS).all(|(id, _)| id.0 == i));
+        }
     }
 }
