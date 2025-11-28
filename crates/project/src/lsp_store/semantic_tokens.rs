@@ -576,7 +576,7 @@ mod tests {
 
         const N_SERVERS: usize = 10;
         let buffer_tokens = BufferSemanticTokens {
-            servers: IndexMap::from_iter((0..N_SERVERS).map(|i| (lsp::LanguageServerId(i), ServerSemanticTokens::from_full(token_data.clone(), None))))
+            servers: HashMap::from_iter((0..N_SERVERS).map(|i| (lsp::LanguageServerId(i), ServerSemanticTokens::from_full(token_data.clone(), None))))
         };
 
         let all_tokens = buffer_tokens
